@@ -1,6 +1,6 @@
-# Intro to genomic variant calling with Genome Analysis Toolkit (GATK) #
+# Parallel genomic variant calling with Genome Analysis Toolkit (GATK) #
 
-This QuickBytes outlines how to run a pipeline based on Genome Analysis Toolkit v4.xx (GATK4) best practices, a common pipeline for processing genomic data from Illumina platforms. Major modifications from “true” best practices are done to facilitate using this pipeline for both model and non-model organisms. This pipeline is designed for genome-wide data but is similar to what one would use for target capture data. Here we to summarize the steps and get you set up, but much more extensive documentation (including other Best Practices pipelines) can be found [here](https://gatk.broadinstitute.org/hc/en-us/sections/360007226651-Best-Practices-Workflows). Specifically, the Best Practices informing this pipeline are the [data pre-processing workflow](https://gatk.broadinstitute.org/hc/en-us/articles/360035535912-Data-pre-processing-for-variant-discovery) and the [germline short variant discovery workflow](https://gatk.broadinstitute.org/hc/en-us/articles/360035535932-Germline-short-variant-discovery-SNPs-Indels-). GATK also has workflows developed already, but those are meant to be run as a “black box”. Here we aim to give you sample commands to emulate these scripts, which will also allow you easily modify the pipeline.
+This QuickBytes outlines how to run a pipeline based on Genome Analysis Toolkit v4.xx (GATK4) best practices, a common pipeline for processing genomic data from Illumina platforms. Major modifications from “true” best practices are done to facilitate using this pipeline for both model and non-model organisms. Additionally, we show how to best parallelize these steps on CARC. Here we to summarize the steps and provide an example of a parallel script, but more extensive documentation (including other Best Practices pipelines) can be found [here](https://gatk.broadinstitute.org/hc/en-us/sections/360007226651-Best-Practices-Workflows). Specifically, the Best Practices informing this pipeline are the [data pre-processing workflow](https://gatk.broadinstitute.org/hc/en-us/articles/360035535912-Data-pre-processing-for-variant-discovery) and the [germline short variant discovery workflow](https://gatk.broadinstitute.org/hc/en-us/articles/360035535932-Germline-short-variant-discovery-SNPs-Indels-). GATK also has workflows developed already, but those are meant to be run as a “black box”. Here we aim to give you sample commands to emulate these scripts, which will also allow you easily modify the pipeline.
 
 The goal of this is to output Single Nucleotide Polymorphisms (SNPs) and optionally indels for a given dataset. This same pipeline can be used for humans, model organisms, and non-model organisms. Spots that can leverage information from model organisms are noted, but those steps can also be bypassed for the sake of generality. Because sample size and depth of coverage are often lower in non-model organisms, filtering recommendations and memory requirements will vary. Note that this assumes you are using paired-end data and will differ slightly if you use unpaired.
 
@@ -69,10 +69,12 @@ We will use this sample list in two ways. The first way is loops, and second is 
 		RunTask -input ${sample}
 	done < $src/sample_list
 
-And this is what GNU parallel looks like (note it's different for BWA, as we need to specify a specific number of jobs).
+And this is what GNU parallel looks like (note it's different for BWA, as we need to specify a specific number of jobs). Remember, we need to use env_parallel if we are using conda.
 	
 	cat $src/sample_list | env_parallel --sshloginfile $PBS_NODEFILE \
-		'RunTask -input {}'
+		'RunTask -input {}.file'
+
+For clarity, in most cases the commands are written as they would be for a for loop (i.e. with $sample instead of {}).
 
 ### Demultiplexing ###
 
@@ -112,7 +114,7 @@ This section prepares BAM files for variant calling. First, we need to index our
 	bwa index -p $reference ${reference}.fa
 	samtools faidx ${reference}.fa -o ${reference}.fa.fai
 
-Then, we need to align demultiplexed reads to a reference. For this step, we will use the Burrough-Wheeler Aligner’s (BWA) mem algorithm. Another common option is [Bowtie](http://bowtie-bio.sourceforge.net/bowtie2/index.shtml). One important flag here is the -R flag, which is the read group and sample ID for a given sample. We assume that these samples are in the same read group. For parallelization, we will use bwa-mem's -t command and optionally GNU parallel. The -t command scales well, but can't work across nodes. Therefore, in the sample script at the end we will show you how to further parallelize using GNU parallel. The base command looks like this:
+Then, we need to align demultiplexed reads to a reference. For this step, we will use the Burrough-Wheeler Aligner’s (BWA) mem algorithm. Another common option is [Bowtie](http://bowtie-bio.sourceforge.net/bowtie2/index.shtml). One important flag here is the -R flag, which is the read group and sample ID for a given sample. We assume that these samples are in the same read group. We can get a node's worth of parallelization with the -t command (it can't work across nodes). Therefore, in the sample script at the end we will show you how to further parallelize BWA. The base command looks like this:
 
 	bwa mem \
 		-t [# threads] -M \
@@ -130,7 +132,9 @@ The next step is to mark PCR duplicates to remove bias, sort the file, and conve
 		--tmp-dir $src/alignments/dedup_temp \
 		-O $src/bams/”$sample”_dedup.bam
 
-The final step is to recalibrate base call scores. This applies machine learning to find where quality scores are over or underestimated based on things like read group and cycle number of a given base. This is strongly recommended, but is rarely possible for non-model organisms, as a file of known polymorphisms is needed. Note, however, that it can take a strongly filtered VCF from the end of the pipeline, before running the entire pipeline again (but [others haven’t found much success with this method](https://evodify.com/gatk-in-non-model-organism/)).
+The final step is to recalibrate base call scores. This applies machine learning to find where quality scores are over or underestimated based on things like read group and cycle number of a given base. This is strongly recommended, but is rarely possible for non-model organisms, as a file of known polymorphisms is needed. Note, however, that it can take a strongly filtered VCF from the end of the pipeline, before running the entire pipeline again (but [others haven’t found much success with this method](https://evodify.com/gatk-in-non-model-organism/)). Here is how it looks, with the first line indexing the input VCF file if you haven't already.
+
+	gatk IndexFeatureFile -I $src[name-of-known-sites].vcf
 
 	gatk BaseRecalibrator \
 		-I $src/bams/${sample}_dedup.bam \
@@ -148,7 +152,7 @@ We recommend combining these steps per sample for efficiency and smoother troubl
 
 ### Collect alignment and summary statistics (optional)
 
-This step is optional, and is not part of GATK’s best practices, but we recommend it. It will output important stats for assessing sample quality. Picard’s “CollectAlignmentSummaryMetrics” gives several helpful statistics about the alignment for a given sample. Picard’s “CollectInsertSizeMetrics” gives information about the distribution of insert sizes. Samtools’s “depth” gives information about the read depth of the sample.
+This step is optional, and is not part of GATK’s best practices, but is good to have. It will output important stats for assessing sample quality. Picard’s “CollectAlignmentSummaryMetrics” gives several helpful statistics about the alignment for a given sample. Picard’s “CollectInsertSizeMetrics” gives information about the distribution of insert sizes. Samtools’s “depth” gives information about the read depth of the sample. Note that "depth" has huge output files, so it may be best to skip it until needed.
 
 	picard CollectAlignmentSummaryMetrics \
 		R=${reference}.fa \
@@ -166,7 +170,7 @@ This step is optional, and is not part of GATK’s best practices, but we recomm
 
 ### Calling variants with HaplotypeCaller
 
-The first step is to go through each BAM files and call SNPs on it using HaplotypeCaller in GVCF mode (“-ERC GVCF” flag), resulting in GVCFs as output.
+The simplest way is individually going through BAM files and calling SNPs on them using HaplotypeCaller in GVCF mode (“-ERC GVCF” flag), resulting in GVCFs as output.
 
 	gatk HaplotypeCaller \
 		-R ${reference}.fa \
@@ -174,17 +178,18 @@ The first step is to go through each BAM files and call SNPs on it using Haploty
 		-O $src/gvcfs/${sample}_raw.g.vcf.gz \
 		-ERC GVCF
 
-One issue with HaplotypeCaller is that it takes a long time but is not programmed to be parallelized by default. However, we can use GNU parallel to easily solve that problem! One note is that we need env_parallel if we are using conda. We can do this two ways. If you have many small inputs, it should be fine to parallelize by sample like this. Note that we restrict the memory such that each job can only max out the core it's on (you'll want to change from 6g based on the machine you're running this on):
+One issue with HaplotypeCaller is that it takes a long time, but is not programmed to be parallelized by default. However, we can use GNU parallel to easily solve that problem!  We can do this two ways. If you have many small inputs, it will be easiest to parallelize like this. Note that we restrict the memory such that each job can only max out the core it's on (you'll want to change from 6g based on the machine you're running this on):
 
 	cat $src/sample_list | env_parallel --sshloginfline $PBS_NODEFILE \
-		“gatk --java-options "-Xmx6g" HaplotypeCaller \
+		'gatk --java-options "-Xmx6g" HaplotypeCaller \
 		-R ${reference}.fa \
 		-I $src/bams/{}_recal.bam \
 		-O $src/gvcfs/${}_raw.g.vcf.gz \
-		-ERC GVCF”
+		-ERC GVCF'
 
-However, if you are dealing with large files, HaplotypeCaller may take longer than your walltime! We'll do this by breaking the job into multiple intervals, which will be every contig in our reference. This can be parallelized very efficiently across many cores:
-
+If you are dealing with large files, HaplotypeCaller may take longer than your walltime! We'll fix this by breaking the job into multiple intervals, which will be every contig in our reference. This can be parallelized very efficiently across many cores:
+	
+	# make our interval list
 	cut -f 1 ${reference}.fa.fai > $src/chromosomes.list
 	
 	mkdir ${src}/gvcfs/${sample}
@@ -196,17 +201,16 @@ However, if you are dealing with large files, HaplotypeCaller may take longer th
 		-L {} \
 		-ERC GVCF'
 	
-We'll then combine every GVCF for a given sample. Note that this step isn't as efficient for parallelization, as it can only operate on as many samples as you have. If you need to checkpoint after the HaplotypeCaller step, you can request fewer nodes for this and future steps:
+We'll then combine every GVCF for a given sample. Note that this step isn't as efficient for parallelization, and is shown for a single sample here. If you need to checkpoint after the HaplotypeCaller step, you can request fewer nodes for this and future steps:
 
-	cat $src/sample_list | env_parallel --sshloginfile $PBS_NODEFILE \
-		'{}_interval_list=""
-		while read interval; do
-			{}_interval_list="${{}_interval_list}-V ${src}/gvcfs/{}/{}_${interval}_raw.g.vcf.gz "
-		done < $src/chromosomes.list
-		gatk CombineGVCFs \
-			-R ${reference}.fna \
-			${{}_interval_list} \
-			-O $src/gvcfs/{}_raw.g.vcf.gz'
+	${sample}_interval_list=""
+	while read interval; do
+		${sample}_interval_list="${${sample}_interval_list}-V ${src}/gvcfs/${sample}/${sample}_${interval}_raw.g.vcf.gz "
+	done < $src/chromosomes.list
+	gatk CombineGVCFs \
+		-R ${reference}.fna \
+		${${sample}_interval_list} \
+		-O $src/gvcfs/${sample}_raw.g.vcf.gz'
 
 ### Consolidating and Genotyping ###
 
@@ -282,7 +286,7 @@ This will give us our final VCF! Note that the filtered SNPs are still included,
 
 ## Sample PBS Script ##
 
-Here is a sample PBS script combining everything we have above. One reason to break up steps like we did is for improved checkpointing (without having to write code checking if files are already present). Once you are finished running a block of code, you can just comment it out. Similarly, if you can only get part way through your sample list, you can copy it and remove samples that have already run.
+Here is a sample PBS script combining everything we have above, with as much parallelization as possible. One reason to break up steps like we did is for improved checkpointing (without having to write code checking if files are already present). Once you are finished running a block of code, you can just comment it out. Similarly, if you can only get part way through your sample list, you can copy it and remove samples that have already completed a given step.
 
 	module load miniconda3-4.7.12.1-gcc-4.8.5-lmtvtik
 	source activate gatk-env
@@ -293,22 +297,23 @@ Here is a sample PBS script combining everything we have above. One reason to br
 	# Trimming section
 	
 	cat $src/sample_list | env_parallel --sshloginfile $PBS_NODEFILE \
-		read1=$src/raw_reads/${sample}_R1.fastq.gz
-		read2=$src/raw_reads/${sample}_R2.fastq.gz
-		paired_r1=$src/clean_reads/${sample}_paired_R1.fastq.gz
-		paired_r2=$src/clean_reads/${sample}_paired_R2.fastq.gz
-		unpaired_r1=$src/clean_reads/${sample}_unpaired_R1.fastq.gz
-		unpaired_r2=$src/clean_reads/${sample}_unpaired_R2.fastq.gz
+		'read1=$src/raw_reads/{}_R1.fastq.gz
+		read2=$src/raw_reads/{}_R2.fastq.gz
+		paired_r1=$src/clean_reads/{}_paired_R1.fastq.gz
+		paired_r2=$src/clean_reads/{}_paired_R2.fastq.gz
+		unpaired_r1=$src/clean_reads/{}_unpaired_R1.fastq.gz
+		unpaired_r2=$src/clean_reads/{}_unpaired_R2.fastq.gz
 		# the minimum read length accepted, we do the liberal 30bp here
 		min_length=30
 		trimmomatic PE -threads 1 \
 			$read1 $read2 $paired_r1 $unpaired_r1 $paired_r2 $unpaired_r2 \
 			ILLUMINACLIP:${adapters}:2:30:10:2:keepBothReads \
-			LEADING:3 TRAILING:3 MINLEN:${min_length}
+			LEADING:3 TRAILING:3 MINLEN:${min_length}'
 	
-	# Section for alignment, marking duplicates, and base recalibration. 
+	# Section for alignment and marking duplicatesn. 
 	# Note we parallelize such that BWA uses exactly one node.
 	# Then, we have a number of jobs equal to the number of nodes requested.
+	# Note that MarkDuplicates doesn't take much time, but only uses one core, so it's a bit inefficient here.
 
 	cat $src/sample_list | env_parallel -j $PBS_NUM_NODES --sshloginfile $PBS_NODEFILE \
 		'bwa mem \
@@ -323,20 +328,28 @@ Here is a sample PBS script combining everything we have above. One reason to br
 			-M $src/bams/{}_dedup_metrics.txt \
 			--tmp-dir $src/alignments/dedup_temp \
 			-O $src/bams/{}_dedup.bam
-		gatk BaseRecalibrator \
+		rm $src/sams/{}.sam'
+
+	# index our VCF if that hasn't already been done
+	gatk IndexFeatureFile -I $src[name-of-known-sites].vcf
+	
+	cat $src/sample_list | env_parallel --sshloginfile $PBS_NODEFILE \
+		'gatk --java-options "-Xmx6g" BaseRecalibrator \
 			-I $src/bams/{}_dedup.bam \
-			-R $reference \
+			-R ${reference}.fa \
 			--known-sites $src/[name-of-known-sites].vcf \
 			-O $src/bams/{}_recal_data.table
-		gatk ApplyBQSR \
+		gatk --java-options "-Xmx6g" ApplyBQSR \
 			-I $src/bams/{}_dedup.bam \
-			-R $reference \
+			-R ${reference}.fa \
 			--bqsr-recal-file bams/{}_recal_data.table \
 			-O $src/bams/{}_recal.bam
-		rm $src/sams/{}.sam'
+		rm $src/bams/{}_dedup.bam'
+		
 
 	# Collecting metrics in parallel
 	# Remember to change from _recal to _dedup if you can’t do base recalibration.
+	# Also, depth will take A LOT of room up, so you may not want to run it until you know what to do with it.
 
 	cat $src/sample_list | env_parallel --sshloginfile $PBS_NODEFILE \
 		'picard CollectAlignmentSummaryMetrics \
@@ -373,8 +386,8 @@ Here is a sample PBS script combining everything we have above. One reason to br
 		while read interval; do
 			{}_interval_list="${{}_interval_list}-V ${src}/gvcfs/{}/{}_${interval}_raw.g.vcf.gz "
 		done < $src/chromosomes.list
-		gatk CombineGVCFs \
-			-R ${reference}.fna \
+		gatk --java-options "-Xmx6g" CombineGVCFs \
+			-R ${reference}.fa \
 			${{}_interval_list} \
 			-O $src/gvcfs/{}_raw.g.vcf.gz'
 			
@@ -430,3 +443,5 @@ Li, H., Handsaker, B., Wysoker, A., Fennell, T., Ruan, J., Homer, N., … Durbin
 McKenna, A., Hanna, M., Banks, E., Sivachenko, A., Cibulskis, K., Kernytsky, A., … DePristo, M. A. (2010). The genome analysis toolkit: A MapReduce framework for analyzing next-generation DNA sequencing data. Genome Research, 20(9), 1297–1303. https://doi.org/10.1101/gr.107524.110
 
 Picard toolkit. (2019). Broad Institute, GitHub Repository. https://doi.org/http://broadinstitute.github.io/picard/
+
+Tange, O. (2018). GNU Parallel 2018 [Computer software]. https://doi.org/10.5281/zenodo.1146014.
