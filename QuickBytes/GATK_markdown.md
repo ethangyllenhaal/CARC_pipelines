@@ -400,7 +400,13 @@ Here is a sample PBS script combining everything we have above, with as much par
 			-R ${reference}.fa \
 			-V $src/gvcfs/combined_intervals/{}_raw.g.vcf.gz \
 			-O $src/combined_vcfs/intervals/{}_genotyped.vcf.gz'
-			
+	
+	rm $src/combined_vcfs/gather_list
+		while read interval; do
+   		echo ${src}/combined_vcfs/intervals/${interval}_genotyped.vcf.gz >> \
+       			$src/combined_vcfs/gather_list
+		done < $src/chromosomes.list
+	
 	gatk GatherVcfs \
     		-I gather_list \
     		-O combined_vcfs/combined_vcf.vcf.gz
