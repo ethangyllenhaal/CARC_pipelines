@@ -386,7 +386,6 @@ Here is a sample PBS script combining everything we have above, with as much par
 	# run CombineGVCFs per interval, each step combines all samples into one interval-specific GVCF
 	cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
 		'interval_list=""
-		# variable for adding the interval name with a period to path
 		while read sample; do
 			interval_list="${interval_list}-V ${src}/gvcfs/${sample}/${sample}_{}_raw.g.vcf.gz "
 		done < $src/sample_list
@@ -401,11 +400,11 @@ Here is a sample PBS script combining everything we have above, with as much par
 			-V $src/gvcfs/combined_intervals/{}_raw.g.vcf.gz \
 			-O $src/combined_vcfs/intervals/{}_genotyped.vcf.gz'
 	
-	rm $src/combined_vcfs/gather_list
-		while read interval; do
+	> $src/combined_vcfs/gather_list
+	while read interval; do
    		echo ${src}/combined_vcfs/intervals/${interval}_genotyped.vcf.gz >> \
        			$src/combined_vcfs/gather_list
-		done < $src/chromosomes.list
+	done < $src/chromosomes.list
 	
 	gatk GatherVcfs \
     		-I gather_list \
