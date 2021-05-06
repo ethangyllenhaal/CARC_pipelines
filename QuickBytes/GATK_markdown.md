@@ -46,8 +46,10 @@ The directories we will need (other than the home directory) are a raw_reads dir
 	mkdir alignments/depth
 	mkdir alignments/dedup_temp
 	mkdir bams
-	mkdir raw_gvcfs
+	mkdir gvcfs
+	mkdir gvcfs/combined_intervals
 	mkdir combined_vcfs
+	mkdir combined_vcfs/intervals
 	mkdir analysis_vcfs
 
 We will be using a few variables throughout this that we can set now. These are shortcuts for the path to our working directory and reference.
@@ -381,32 +383,27 @@ Here is a sample PBS script combining everything we have above, with as much par
 			-ERC GVCF'
 	done < $src/sample_list
 
-	cat $src/sample_list | env_parallel --sshloginfile $PBS_NODEFILE \
-		'{}_interval_list=""
-		while read interval; do
-			{}_interval_list="${{}_interval_list}-V ${src}/gvcfs/{}/{}_${interval}_raw.g.vcf.gz "
-		done < $src/intervals.list
+	# run CombineGVCFs per interval, each step combines all samples into one interval-specific GVCF
+	cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
+		'interval_list=""
+		# variable for adding the interval name with a period to path
+		while read sample; do
+			interval_list="${interval_list}-V ${src}/gvcfs/${sample}/${sample}_{}_raw.g.vcf.gz "
+		done < $src/sample_list
 		gatk --java-options "-Xmx6g" CombineGVCFs \
 			-R ${reference}.fa \
-			${{}_interval_list} \
-			-O $src/gvcfs/{}_raw.g.vcf.gz'
+			${interval_list} \
+			-O $src/gvcfs/combined_intervals/{}_raw.g.vcf.gz'
 			
-	# The rest, assuming you do CombineGVCFs
-
-	gvcf_names=""
-	while read sample; do
-		gvcf_names = "${gvcf_names}-V ${src}/gvcfs/${sample}_raw.g.vcf.gz "
-	done < $src/sample_list
-
-	gatk CombineGVCFs \
-		-R ${reference}.fa \
-		${gvcf_names} \
-		-O $src/combined_vcfs/combined_gvcf.g.vcf.gz
-
-	gatk GenotypeGVCFs \
-		-R ${reference}.fa \
-		-V $src/combined_vcfs/combined_gvcf.g.vcf.gz \
-		-O $src/combined_vcfs/combined_vcf.vcf.gz
+	cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
+		'gatk --java-options "-Xmx6g" GenotypeGVCFs \
+			-R ${reference}.fa \
+			-V $src/gvcfs/combined_intervals/{}_raw.g.vcf.gz \
+			-O $src/combined_vcfs/intervals/{}_genotyped.vcf.gz'
+			
+	gatk GatherVcfs \
+    		-I gather_list \
+    		-O combined_vcfs/combined_vcf.vcf.gz
 
 	gatk SelectVariants \
 		-R ${reference}.fa \
@@ -445,3 +442,5 @@ McKenna, A., Hanna, M., Banks, E., Sivachenko, A., Cibulskis, K., Kernytsky, A.,
 Picard toolkit. (2019). Broad Institute, GitHub Repository. https://doi.org/http://broadinstitute.github.io/picard/
 
 Tange, O. (2018). GNU Parallel 2018 [Computer software]. https://doi.org/10.5281/zenodo.1146014.
+
+
