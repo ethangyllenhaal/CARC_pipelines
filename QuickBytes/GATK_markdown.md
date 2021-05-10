@@ -407,7 +407,7 @@ Here is a sample PBS script combining everything we have above, with as much par
 	done < $src/chromosomes.list
 	
 	gatk GatherVcfs \
-    		-I gather_list \
+    		-I $src/combined_vcfs/gather_list \
     		-O combined_vcfs/combined_vcf.vcf.gz
 
 	gatk SelectVariants \
