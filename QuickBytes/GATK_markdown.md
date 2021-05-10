@@ -426,11 +426,11 @@ Here is a sample PBS script combining everything we have above, with as much par
 		-R ${reference}.fa \
 		-V $src/combined_vcfs/raw_snps.vcf.gz \
 		-O $src/analysis_vcfs/filtered_snps.vcf  \
-		-filter-name “DP_filter” -filter “DP < 4” \
-		-filter-name “Q_filter” -filter “QUAL < 30.0” \
-		-filter-name “QD_filter” -filter “QD < 2.0” \
-		-filter-name “MQ_filter” -filter “MQ < 40.0” \
-		-filter-name “FS_filter” -filter “FS > 60.0”
+		-filter-name "DP_filter" -filter "DP < 4" \
+		-filter-name "Q_filter" -filter "QUAL < 30.0" \
+		-filter-name "QD_filter" -filter "QD < 2.0" \
+		-filter-name "MQ_filter" -filter "MQ < 40.0" \
+		-filter-name "FS_filter" -filter "FS > 60.0"
 
 ## Troubleshooting ##
 
