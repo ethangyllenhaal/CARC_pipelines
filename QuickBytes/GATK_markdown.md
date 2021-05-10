@@ -203,16 +203,7 @@ If you are dealing with large files, HaplotypeCaller may take longer than your w
 		-L {} \
 		-ERC GVCF'
 	
-We'll then combine every GVCF for a given sample. Note that this step isn't as efficient for parallelization, and is shown for a single sample here. If you need to checkpoint after the HaplotypeCaller step, you can request fewer nodes for this and future steps:
-
-	${sample}_interval_list=""
-	while read interval; do
-		${sample}_interval_list="${${sample}_interval_list}-V ${src}/gvcfs/${sample}/${sample}_${interval}_raw.g.vcf.gz "
-	done < $src/intervals.list
-	gatk CombineGVCFs \
-		-R ${reference}.fna \
-		${${sample}_interval_list} \
-		-O $src/gvcfs/${sample}_raw.g.vcf.gz'
+You'll run CombineGVCFs and GenotypeGVCFs per interval, before using GatherVcfs to bring together the output. I outline this full Scatter-Gather version at the example PBS script at the end.
 
 ### Consolidating and Genotyping ###
 
@@ -383,9 +374,10 @@ Here is a sample PBS script combining everything we have above, with as much par
 			-ERC GVCF'
 	done < $src/sample_list
 
-	# run CombineGVCFs per interval, each step combines all samples into one interval-specific GVCF
+	# Run CombineGVCFs per interval, each step combines all samples into one interval-specific GVCF
 	cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
 		'interval_list=""
+		# loop to generate list of sample-specific intervals to combine
 		while read sample; do
 			interval_list="${interval_list}-V ${src}/gvcfs/${sample}/${sample}_{}_raw.g.vcf.gz "
 		done < $src/sample_list
@@ -393,23 +385,27 @@ Here is a sample PBS script combining everything we have above, with as much par
 			-R ${reference}.fa \
 			${interval_list} \
 			-O $src/gvcfs/combined_intervals/{}_raw.g.vcf.gz'
-			
+	
+	# Run GenotypeGVCFs on each interval GVCF
 	cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
 		'gatk --java-options "-Xmx6g" GenotypeGVCFs \
 			-R ${reference}.fa \
 			-V $src/gvcfs/combined_intervals/{}_raw.g.vcf.gz \
 			-O $src/combined_vcfs/intervals/{}_genotyped.vcf.gz'
 	
+	# Make a file with a list of paths for GatherVcfs to use
 	> $src/combined_vcfs/gather_list
 	while read interval; do
    		echo ${src}/combined_vcfs/intervals/${interval}_genotyped.vcf.gz >> \
        			$src/combined_vcfs/gather_list
 	done < $src/chromosomes.list
 	
+	# Run GatherVcfs
 	gatk GatherVcfs \
     		-I $src/combined_vcfs/gather_list \
     		-O combined_vcfs/combined_vcf.vcf.gz
 
+	# Select and filter variants
 	gatk SelectVariants \
 		-R ${reference}.fa \
 		-V $src/combined_vcfs/combined_vcf.vcf.gz \
@@ -447,5 +443,3 @@ McKenna, A., Hanna, M., Banks, E., Sivachenko, A., Cibulskis, K., Kernytsky, A.,
 Picard toolkit. (2019). Broad Institute, GitHub Repository. https://doi.org/http://broadinstitute.github.io/picard/
 
 Tange, O. (2018). GNU Parallel 2018 [Computer software]. https://doi.org/10.5281/zenodo.1146014.
-
-
