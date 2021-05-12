@@ -36,7 +36,7 @@ If you are parallelizing (see “Calling variants with HaplotypeCaller” and sa
 	module load parallel-20170322-gcc-4.8.5-2ycpx7e
 	source $(which env_parallel.bash)
 
-The directories we will need (other than the home directory) are a raw_reads directory for the demultiplexed reads and the following for various intermediate files to go into. Alternatively, if you don’t want to move around all your reads, just replace the path in the BWA call with that path.
+The directories we will need (other than the home directory) are a raw_reads directory for the demultiplexed reads and the following for various intermediate files to go into. Alternatively, if you don’t want to move around all your reads, just replace the path in the BWA call with that path. Note that a few of these are only used with scatter-gather parallelization (reccomended for larger datasets).
 
 	mkdir clean_reads
 	mkdir alignments
@@ -47,10 +47,11 @@ The directories we will need (other than the home directory) are a raw_reads dir
 	mkdir alignments/dedup_temp
 	mkdir bams
 	mkdir gvcfs
-	mkdir gvcfs/combined_intervals
 	mkdir combined_vcfs
-	mkdir combined_vcfs/intervals
 	mkdir analysis_vcfs
+	# scatter-gather only
+	mkdir combined_vcfs/intervals
+	mkdir gvcfs/combined_intervals
 
 We will be using a few variables throughout this that we can set now. These are shortcuts for the path to our working directory and reference.
 
@@ -189,25 +190,11 @@ One issue with HaplotypeCaller is that it takes a long time, but is not programm
 		-O $src/gvcfs/${}_raw.g.vcf.gz \
 		-ERC GVCF'
 
-If you are dealing with large files, HaplotypeCaller may take longer than your walltime! We'll fix this by breaking the job into multiple intervals, which will be every contig in our reference. This can be parallelized very efficiently across many cores:
-	
-	# make our interval list
-	cut -f 1 ${reference}.fa.fai > $src/intervals.list
-	
-	mkdir ${src}/gvcfs/${sample}
-	cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
-		'gatk --java-options "-Xmx6g" HaplotypeCaller \
-		-R ${reference}.fa \
-		-I $src/bams/${sample}_recal.bam \
-		-O $src/gvcfs/${sample}/${sample}_{}_raw.g.vcf.gz \
-		-L {} \
-		-ERC GVCF'
-	
-You'll run CombineGVCFs and GenotypeGVCFs per interval, before using GatherVcfs to bring together the output. I outline this full Scatter-Gather version at the example PBS script at the end.
+If you are dealing with large files, HaplotypeCaller may take longer than your walltime. The Scatter-gather Parallel section will outline how to fix that by breaking the job into multiple intervals.
 
 ### Consolidating and Genotyping ###
 
-This next step has two options, GenomicsDBImport and CombineGVCFs. GATK recommends GenomicsDBImport, as it is more efficient for large datasets, but it performs poorly on references with many contigs. CombineGVCFs takes a lot of memory for datasets with many samples. Overall, it seems that GenomicsDBImport is more suited for model organisms, while CombineGVCFs is more convenient for non-model organisms (which often have smaller projects and less contiguous references). If in doubt, I'd say go with GenomicsDBImport. Note that GenomicsDBImport must have intervals (generally corresponding to contigs or chromosomes) specified. GenomicsDBImport can take a file specifying GVCFs, but because CombineGVCFs cannot we just make a list of samples to combine programmatically and plug it in. Here is how we generate that command:
+This next step has two options, GenomicsDBImport and CombineGVCFs. GATK recommends GenomicsDBImport, as it is more efficient for large datasets, but it performs poorly on references with many contigs. CombineGVCFs takes a lot of memory for datasets with many samples. Overall, it seems that GenomicsDBImport is more suited for model organisms, while CombineGVCFs is more convenient for non-model organisms (which often have smaller projects and less contiguous references). If in doubt, I'd say go with CombineGVCFs, which is much easier to implement. Note that GenomicsDBImport must have intervals (generally corresponding to contigs or chromosomes) specified. GenomicsDBImport can take a file specifying GVCFs, but because CombineGVCFs cannot we just make a list of samples to combine programmatically and plug it in. Here is how we generate that command:
 
 	gvcf_names=""
 	while read sample; do
@@ -247,6 +234,7 @@ And one for CombineGVCFs:
 		-R ${reference}.fa \
 		-V $src/combined_vcfs/combined_gvcf.g.vcf.gz \
 		-O $src/combined_vcfs/combined_vcf.vcf.gz
+		
 
 ### Selecting and filtering variants
 
@@ -276,6 +264,54 @@ Here are some good sample filters. The “DP_filter” is depth of coverage (you
 		-filter-name “FS_filter” -filter “FS > 60.0”
 
 This will give us our final VCF! Note that the filtered SNPs are still included, just with a filter tag. You can use something like SelectVariants' "exclude-filtered" flag or [VCFtools’](http://vcftools.sourceforge.net/) “--remove-filtered-all” flag to get rid of them.
+
+### Scatter-gather Parallel
+
+Scatter-gather is the process of breaking a job into intervals (i.e. contigs or scaffolds in a reference) and running HaplotypeCaller, CombineGVCFs, and GenotypeGVCFs on each interval in parallel. This results in a massive speed-up due to the parallelization. This is fully implemented in the sample script below, with each step outlined here. This starts with HaplotypeCaller, and the output of GatherVcfs is the same as what comes from GenotypeGVCFs. Here is how we run HaplotypeCaller, note that this is only one sample, see the sample script for running this on all samples:
+	
+	# make our interval list
+	cut -f 1 ${reference}.fa.fai > $src/intervals.list
+	
+	mkdir ${src}/gvcfs/${sample}
+	cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
+		'gatk --java-options "-Xmx6g" HaplotypeCaller \
+		-R ${reference}.fa \
+		-I $src/bams/${sample}_recal.bam \
+		-O $src/gvcfs/${sample}/${sample}_{}_raw.g.vcf.gz \
+		-L {} \
+		-ERC GVCF'
+	
+You'll run then run CombineGVCFs. For each interval, you'll make a list of GVCF file paths for each sample you're including (the while loop below).
+
+	cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
+		'interval_list=""
+		# loop to generate list of sample-specific intervals to combine
+		while read sample; do
+			interval_list="${interval_list}-V ${src}/gvcfs/${sample}/${sample}_{}_raw.g.vcf.gz "
+		done < $src/sample_list
+		gatk --java-options "-Xmx6g" CombineGVCFs \
+			-R ${reference}.fa \
+			${interval_list} \
+			-O $src/gvcfs/combined_intervals/{}_raw.g.vcf.gz'
+Next, you run GenotypeGVCFs to get VCFs to gather afterwards. No fancy lists needed!
+
+	cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
+		'gatk --java-options "-Xmx6g" GenotypeGVCFs \
+			-R ${reference}.fa \
+			-V $src/gvcfs/combined_intervals/{}_raw.g.vcf.gz \
+			-O $src/combined_vcfs/intervals/{}_genotyped.vcf.gz'
+			
+The final (gather) step uses GatherVcfs, for which we'll make a file containing the paths to all input genotyped VCFs (generated in the while loop).
+
+	> $src/combined_vcfs/gather_list
+	while read interval; do
+   		echo ${src}/combined_vcfs/intervals/${interval}_genotyped.vcf.gz >> \
+       			$src/combined_vcfs/gather_list
+	done < $src/chromosomes.list
+	
+	gatk GatherVcfs \
+    		-I $src/combined_vcfs/gather_list \
+    		-O combined_vcfs/combined_vcf.vcf.gz
 
 ## Sample PBS Script ##
 
