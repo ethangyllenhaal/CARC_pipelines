@@ -112,10 +112,13 @@ If you're using the spack module, you call trimmomatic using java and get the ad
 
 ### Alignment and Pre-processing ###
 
-This section prepares BAM files for variant calling. First, we need to index our reference. We'll do this two ways, one for bwa and one for GATK:
+This section prepares BAM files for variant calling. First, we need to index our reference and make a sequence dictionary. We'll index two ways, one for bwa and one for GATK:
 
 	bwa index -p $reference ${reference}.fa
 	samtools faidx ${reference}.fa -o ${reference}.fa.fai
+	picard CreateSequenceDictionary \
+       		R=${reference}.fa \
+       		O=${reference}.dict
 
 Then, we need to align demultiplexed reads to a reference. For this step, we will use the Burrough-Wheeler Aligner’s (BWA) mem algorithm. Another common option is [Bowtie](http://bowtie-bio.sourceforge.net/bowtie2/index.shtml). One important flag here is the -R flag, which is the read group and sample ID for a given sample. We assume that these samples are in the same read group. We can get a node's worth of parallelization with the -t command (it can't work across nodes). Therefore, in the sample script at the end we will show you how to further parallelize BWA. The base command looks like this:
 
@@ -349,7 +352,7 @@ Here is a sample PBS script combining everything we have above, with as much par
 	cat $src/sample_list | env_parallel -j $PBS_NUM_NODES --sshloginfile $PBS_NODEFILE \
 		'bwa mem \
 			-t $threads -M \
-			-R ‘@RG\tID:{}\tPL:ILLUMINA\tLB:”{}”\tSML”{}” \
+			-R "@RG\tID:{}\tPL:ILLUMINA\tLB:{}\tSM:{}" \
 			$reference \
 			$src/raw_reads/{}_R1.fastq.gz \
 			$src/raw_reads/{}_R2.fastq.gz \
