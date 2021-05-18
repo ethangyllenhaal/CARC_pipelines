@@ -46,10 +46,8 @@ The directories we will need (other than the home directory) are a raw_reads dir
 	mkdir alignments/depth
 	mkdir alignments/dedup_temp
 	mkdir bams
-	mkdir gvcfs
-	mkdir gvcfs/combined_intervals
+	mkdir raw_gvcfs
 	mkdir combined_vcfs
-	mkdir combined_vcfs/intervals
 	mkdir analysis_vcfs
 
 We will be using a few variables throughout this that we can set now. These are shortcuts for the path to our working directory and reference.
@@ -292,9 +290,12 @@ Here is a sample PBS script combining everything we have above, with as much par
 
 	module load miniconda3-4.7.12.1-gcc-4.8.5-lmtvtik
 	source activate gatk-env
-	
+
+	module load parallel-20170322-gcc-4.8.5-2ycpx7e
+	source $(which env_parallel.bash)
+
 	src=$PBS_O_WORKDIR
-	reference=${src}/reference.fa
+	reference=${src}/reference
 	
 	# Trimming section
 	adapters=~/.conda/pkgs/trimmomatic-0.39-1/share/trimmomatic-0.39-1/adapters/TruSeq3-PE.fa
@@ -320,17 +321,17 @@ Here is a sample PBS script combining everything we have above, with as much par
 	cat $src/sample_list | env_parallel -j $PBS_NUM_NODES --sshloginfile $PBS_NODEFILE \
 		'bwa mem \
 			-t $threads -M \
-			-R ‘@RG\tID:{}\tPL:ILLUMINA\tLB:”{}”\tSML”{}” \
+			-R "@RG\tID:{}\tPL:ILLUMINA\tLB:{}\tSML{}" \
 			$reference \
 			$src/raw_reads/{}_R1.fastq.gz \
 			$src/raw_reads/{}_R2.fastq.gz \
-			> $src/sams/{}.sam
+			> $src/alignments/{}.sam
 		gatk MarkDuplicatesSpark \
-			-I $src/sams/{}.sam \
+			-I $src/alignments/{}.sam \
 			-M $src/bams/{}_dedup_metrics.txt \
 			--tmp-dir $src/alignments/dedup_temp \
 			-O $src/bams/{}_dedup.bam
-		rm $src/sams/{}.sam'
+		rm $src/alignments/{}.sam'
 
 	# index our VCF if that hasn't already been done
 	gatk IndexFeatureFile -I $src[name-of-known-sites].vcf
@@ -383,37 +384,32 @@ Here is a sample PBS script combining everything we have above, with as much par
 			-ERC GVCF'
 	done < $src/sample_list
 
-	# make list of intervals without periods
-	sed 's/\./_/g' intervals.list > intervals_noPeriods.list
-	
-	cat $src/intervals_noPeriods.list | env_parallel --sshloginfile $PBS_NODEFILE \
-		'{}_list=""
-		# variable for adding the interval name with a period to path
-		temp_{}="$(echo {} | sed "s/_/\./g")"
-		while read sample; do
-			{}_list="${{}_list}-V ${src}/gvcfs/${sample}/${sample}_${temp_{}}_raw.g.vcf.gz "
-		done < $src/sample_list
+	cat $src/sample_list | env_parallel --sshloginfile $PBS_NODEFILE \
+		'{}_interval_list=""
+		while read interval; do
+			{}_interval_list="${{}_interval_list}-V ${src}/gvcfs/{}/{}_${interval}_raw.g.vcf.gz "
+		done < $src/intervals.list
 		gatk --java-options "-Xmx6g" CombineGVCFs \
 			-R ${reference}.fa \
-			${{}_list} \
-			-O $src/gvcfs/combined_intervals/${temp_{}}_raw.g.vcf.gz'
+			${{}_interval_list} \
+			-O $src/gvcfs/{}_raw.g.vcf.gz'
 			
-	cat $src/intervals.list | env_parallel --sshloginfile $PBS_NODEFILE \
-		'gatk --java-options "-Xmx6g" GenotypeGVCFs \
-			-R ${reference}.fa \
-			-V $src/gvcfs/combined_intervals/{}_raw.g.vcf.gz \
-			-O $src/combined_vcfs/intervals/{}_genotyped.vcf.gz'
-			
-	# make file with VCFs to gather, note that 
-	rm $src/combined_vcfs/gather_list
-	while read interval; do
-   		echo ${src}/combined_vcfs/intervals/${interval}_genotyped.vcf.gz >> \
-        	$src/combined_vcfs/gather_list
-	done < $src/intervals.list
-	
-	gatk GatherVcfs \
-    		-I $src/combined_vcfs/gather_list \
-    		-O $src/combined_vcfs/combined_vcf.vcf.gz
+	# The rest, assuming you do CombineGVCFs
+
+	gvcf_names=""
+	while read sample; do
+		gvcf_names = "${gvcf_names}-V ${src}/gvcfs/${sample}_raw.g.vcf.gz "
+	done < $src/sample_list
+
+	gatk CombineGVCFs \
+		-R ${reference}.fa \
+		${gvcf_names} \
+		-O $src/combined_vcfs/combined_gvcf.g.vcf.gz
+
+	gatk GenotypeGVCFs \
+		-R ${reference}.fa \
+		-V $src/combined_vcfs/combined_gvcf.g.vcf.gz \
+		-O $src/combined_vcfs/combined_vcf.vcf.gz
 
 	gatk SelectVariants \
 		-R ${reference}.fa \
@@ -452,5 +448,3 @@ McKenna, A., Hanna, M., Banks, E., Sivachenko, A., Cibulskis, K., Kernytsky, A.,
 Picard toolkit. (2019). Broad Institute, GitHub Repository. https://doi.org/http://broadinstitute.github.io/picard/
 
 Tange, O. (2018). GNU Parallel 2018 [Computer software]. https://doi.org/10.5281/zenodo.1146014.
-
-
